@@ -300,38 +300,43 @@ def set_meta(conn, key, value):
 # --- 同期処理 ---------------------------------------------------------------
 
 
-def sync_database(db_path):
-    """DBを最新の状態に同期する。フルリビルドまたは差分適用が発生した場合は True を返す。"""
+def get_latest_available_date(opener):
+    """全件データの作成日と、その後の差分データの最終日のうち、より新しい方を返す。
+
+    重いファイルは一切ダウンロードせず、ダウンロードページのHTML取得のみで判定できる。
+    """
+    baseline_date, _ = get_baseline_info(opener)
+    diff_entries = get_diff_file_list(opener)
+    dates = [baseline_date] + [entry_date for entry_date, _ in diff_entries]
+    return max(dates)
+
+
+def build_database(db_path):
+    """全件データ + それ以降の差分データから、DBを毎回フルリビルドする。
+
+    差分だけを既存DBに適用していく方式ではなく、常に全件データから作り直すことで、
+    不整合の蓄積を防ぎ、DBを毎回クリーンな状態に保つ。
+    """
     opener = make_opener()
     conn = sqlite3.connect(db_path)
-    changed = False
     try:
         conn.executescript(SCHEMA)
+        conn.execute("DELETE FROM corporations")
+        conn.execute("DELETE FROM cities")
+        conn.execute("DELETE FROM prefectures")
         ensure_kinds(conn)
-        conn.commit()
 
         baseline_date, baseline_file_no = get_baseline_info(opener)
-        current_baseline = get_meta(conn, "baseline_date")
+        print(f"全件データ({baseline_date})を取得します。", file=sys.stderr)
+        zip_bytes = download_file(opener, ZENKEN_DOWNLOAD_PAGE, baseline_file_no)
+        csv_text = extract_csv_text(zip_bytes)
+        upserts, deletes = apply_rows(conn, iter_csv_rows(csv_text))
+        print(f"  有効: {upserts} 件, 除外(廃止等): {deletes} 件", file=sys.stderr)
+        set_meta(conn, "baseline_date", baseline_date.isoformat())
 
-        if current_baseline != baseline_date.isoformat():
-            print(f"全件データ({baseline_date})でフルリビルドします。", file=sys.stderr)
-            conn.execute("DELETE FROM corporations")
-            conn.execute("DELETE FROM cities")
-            conn.execute("DELETE FROM prefectures")
-            zip_bytes = download_file(opener, ZENKEN_DOWNLOAD_PAGE, baseline_file_no)
-            csv_text = extract_csv_text(zip_bytes)
-            upserts, deletes = apply_rows(conn, iter_csv_rows(csv_text))
-            print(f"  有効: {upserts} 件, 除外(廃止等): {deletes} 件", file=sys.stderr)
-            set_meta(conn, "baseline_date", baseline_date.isoformat())
-            set_meta(conn, "last_diff_date", baseline_date.isoformat())
-            conn.commit()
-            changed = True
-
-        last_diff_str = get_meta(conn, "last_diff_date") or baseline_date.isoformat()
-        last_diff_date = date.fromisoformat(last_diff_str)
-
+        latest_date = baseline_date
         diff_entries = get_diff_file_list(opener)
-        pending = [(d, file_nos) for d, file_nos in diff_entries if d > last_diff_date]
+        pending = [(d, file_nos) for d, file_nos in diff_entries if d > baseline_date]
 
         for entry_date, file_nos in pending:
             total_upserts = total_deletes = 0
@@ -341,30 +346,39 @@ def sync_database(db_path):
                 upserts, deletes = apply_rows(conn, iter_csv_rows(csv_text))
                 total_upserts += upserts
                 total_deletes += deletes
-            set_meta(conn, "last_diff_date", entry_date.isoformat())
-            conn.commit()
-            changed = True
+            latest_date = entry_date
             print(
                 f"差分 {entry_date} を適用しました（反映: {total_upserts} 件, 除外: {total_deletes} 件）。",
                 file=sys.stderr,
             )
 
-        if changed:
-            conn.execute("VACUUM")
+        set_meta(conn, "last_diff_date", latest_date.isoformat())
+        conn.commit()
+        conn.execute("VACUUM")
 
         count = conn.execute("SELECT COUNT(*) FROM corporations").fetchone()[0]
-        print(f"corporations: {count} 件（最終適用日: {get_meta(conn, 'last_diff_date')}）", file=sys.stderr)
+        print(f"corporations: {count} 件（最終適用日: {latest_date}）", file=sys.stderr)
+        return latest_date
     finally:
         conn.close()
-    return changed
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("-o", "--output", default="houjin_bangou.db", help="出力先のSQLite3ファイルパス")
+    parser.add_argument(
+        "--check-latest-date",
+        action="store_true",
+        help="ダウンロードは行わず、公表サイト上の最新データの日付だけを表示して終了する",
+    )
     args = parser.parse_args()
-    changed = sync_database(args.output)
-    print("changed=true" if changed else "changed=false")
+
+    if args.check_latest_date:
+        print(get_latest_available_date(make_opener()).isoformat())
+        return
+
+    latest_date = build_database(args.output)
+    print(f"latest_date={latest_date.isoformat()}")
 
 
 if __name__ == "__main__":
