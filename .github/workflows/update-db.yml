@@ -45,9 +45,9 @@ jobs:
         if: steps.check.outputs.changed == 'true'
         run: python3 build_db.py -o houjin_bangou.db
 
-      - name: Split database if needed
+      - name: Compress, split and checksum database
         if: steps.check.outputs.changed == 'true'
-        run: python3 split_db.py houjin_bangou.db
+        run: python3 package_db.py houjin_bangou.db
 
       - name: Create GitHub Release
         if: steps.check.outputs.changed == 'true'
@@ -57,7 +57,7 @@ jobs:
         run: |
           TAG="db-${LATEST_AVAILABLE}"
           gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag 2>/dev/null || true
-          gh release create "$TAG" houjin_bangou.db* \
+          gh release create "$TAG" houjin_bangou.db.gz* SHA256SUMS \
             --repo "$GITHUB_REPOSITORY" \
             --title "法人番号データ ${LATEST_AVAILABLE}" \
             --notes "最終適用日: ${LATEST_AVAILABLE}"

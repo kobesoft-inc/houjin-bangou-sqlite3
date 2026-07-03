@@ -14,16 +14,26 @@
 https://github.com/kobesoft-inc/houjin-bangou-sqlite3/releases/latest
 ```
 
-DBファイルが50MBを超える場合、`houjin_bangou.db.00`, `houjin_bangou.db.01`, ... のように
-分割されたファイルとしてリリースされます（GitHub Releasesの1アセットあたりのサイズ制約とは無関係に、
-ダウンロード・配布のしやすさのために分割しています）。分割されている場合は、ダウンロード後に
-連結してください。
+配布ファイルは常にgzip圧縮した `houjin_bangou.db.gz` です。圧縮後のサイズが50MBを超える場合は、
+`houjin_bangou.db.gz.0`, `houjin_bangou.db.gz.1`, ... のように分割されます（GitHub Releasesの
+1アセットあたりのサイズ制約とは無関係に、ダウンロード・配布のしやすさのために分割しています）。
+分割されている場合は、ダウンロード後に連結してから展開してください。
 
 ```bash
-cat houjin_bangou.db.* > houjin_bangou.db
+cat houjin_bangou.db.gz.* > houjin_bangou.db.gz   # 分割されていない場合は不要
+gunzip houjin_bangou.db.gz
 ```
 
-分割されていない場合は `houjin_bangou.db` 単体がそのままリリースされています。
+リリースには `SHA256SUMS` も添付されています。分割ファイル・圧縮ファイルがすべて揃っているか、
+壊れていないかは、ダウンロードしたファイルと同じディレクトリで次のように検証できます
+（`houjin_bangou.db` の行は、展開後の最終的なファイルの検証用です）。
+
+```bash
+shasum -a 256 -c SHA256SUMS
+```
+
+`SHA256SUMS` に載っているファイル名がダウンロードした全ファイルなので、
+分割ファイルが足りているかどうかも、この一覧と実際に手元にあるファイルを突き合わせれば確認できます。
 
 ### 2. テーブル構造
 
