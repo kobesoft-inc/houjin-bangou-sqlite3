@@ -1,0 +1,65 @@
+name: Update corporate number database
+
+on:
+  schedule:
+    # 毎日 00:00 UTC (= 09:00 JST)
+    - cron: "0 0 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  update-db:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download previous release database
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          LATEST_TAG="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName 2>/dev/null || true)"
+          if [ -z "$LATEST_TAG" ]; then
+            echo "既存のリリースが無いため、フルリビルドから開始します。"
+            exit 0
+          fi
+          echo "前回のリリース: $LATEST_TAG"
+          gh release download "$LATEST_TAG" --repo "$GITHUB_REPOSITORY" -p 'houjin_bangou.db*' -D .
+          if ls houjin_bangou.db.* >/dev/null 2>&1; then
+            cat houjin_bangou.db.* > houjin_bangou.db
+            rm -f houjin_bangou.db.*
+          fi
+
+      - name: Sync database
+        id: sync
+        run: |
+          CHANGED_LINE="$(python3 build_db.py -o houjin_bangou.db | tail -n1)"
+          echo "$CHANGED_LINE" >> "$GITHUB_OUTPUT"
+          # 分割前（houjin_bangou.dbがまだ単一ファイルの状態）でメタ情報を取得しておく
+          LAST_DIFF_DATE="$(sqlite3 houjin_bangou.db "SELECT value FROM meta WHERE key='last_diff_date'")"
+          echo "last_diff_date=$LAST_DIFF_DATE" >> "$GITHUB_OUTPUT"
+
+      - name: Split database if needed
+        if: steps.sync.outputs.changed == 'true'
+        run: python3 split_db.py houjin_bangou.db
+
+      - name: Create GitHub Release
+        if: steps.sync.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LAST_DIFF_DATE: ${{ steps.sync.outputs.last_diff_date }}
+        run: |
+          TAG="db-${LAST_DIFF_DATE}"
+          gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$TAG" houjin_bangou.db* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "法人番号データ ${LAST_DIFF_DATE}" \
+            --notes "最終適用日: ${LAST_DIFF_DATE}"
