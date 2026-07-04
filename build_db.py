@@ -2,12 +2,14 @@
 """国税庁 法人番号公表サイトのデータをダウンロードし、SQLite3データベースを生成・更新する。
 
 公表サイトの「全件データ」（月末時点の全国データ、大きい）と「差分データ」
-（日次、小さい）の2種類を組み合わせて同期する。
+（日次、小さい）の2種類を組み合わせて、毎回DBをフルリビルドする。
 
-- 既存のDBが無い、または「全件データ」の作成日が既存DBのものと異なる場合は、
-  最新の全件データをダウンロードしてフルリビルドする。
-- それ以外の場合は、DBに記録済みの最終適用日より後の差分データだけを
-  ダウンロードして順番に適用する（同期状態はDB内の meta テーブルに保持する）。
+- 現在公開されている全件データをダウンロードして取り込む。
+- その作成日より後の差分データを、公開されている分すべて日付順にダウンロードして適用する。
+
+差分だけを既存DBに継ぎ足していく方式ではなく、毎回ゼロから作り直すことで、
+不整合の蓄積を防いでいる（同期状態はDB内の meta テーブルに記録するが、
+次回実行時に読み直して再利用することはしない）。
 
 ダウンロードは通常のリンクではなく、隠しフォームのPOST送信（CSRFトークン＋
 selDlFileNoパラメータ）で実現されているため、GETでトークン・セッションcookieを
@@ -18,10 +20,11 @@ selDlFileNoパラメータ）で実現されているため、GETでトークン
 - prefectures  : 都道府県コード -> 都道府県名
 - cities       : 市区町村コード(都道府県コード+3桁) -> 市区町村名
 - kinds        : 法人種別コード -> 法人種別名（固定10種、公式仕様書より）
-- corporations : 法人番号(BIGINT) -> 商号名称, 都道府県コード, 市区町村コード, 法人種別
+- corporations : 法人番号(BIGINT) -> 商号名称, 都道府県コード, 市区町村コード,
+  住所詳細(丁目番地等), 法人種別
   - 登記記録の閉鎖等年月日が設定されている（＝廃止等）法人は取り込まない。
   - 処理区分が「99:削除」の法人番号は取り込み対象から削除する。
-- meta          : 同期状態（全件データの作成日、最終適用済み差分日）を保持する内部テーブル
+- meta          : 同期状態（全件データの作成日、最終適用済み差分日）を記録する内部テーブル
 
 商号又は名称は、検索・比較しやすいよう以下の正規化を行う。
 
@@ -96,6 +99,7 @@ CREATE TABLE IF NOT EXISTS corporations (
     name             TEXT NOT NULL,
     pref_code        TEXT NOT NULL REFERENCES prefectures (pref_code),
     city_code        TEXT NOT NULL REFERENCES cities (city_code),
+    address          TEXT NOT NULL,
     kind             TEXT NOT NULL REFERENCES kinds (kind_code)
 );
 CREATE INDEX IF NOT EXISTS idx_corporations_name ON corporations (name);
@@ -245,8 +249,9 @@ def apply_rows(conn, rows):
         cities[city_code] = (pref_code, city_name)
 
         name = normalize_name(row[6])
+        address = row[11].strip()
         kind = row[8]
-        upserts.append((int(corporate_number), name, pref_code, city_code, kind))
+        upserts.append((int(corporate_number), name, pref_code, city_code, address, kind))
 
     if prefectures:
         conn.executemany(
@@ -262,11 +267,11 @@ def apply_rows(conn, rows):
         )
     if upserts:
         conn.executemany(
-            "INSERT INTO corporations (corporate_number, name, pref_code, city_code, kind) "
-            "VALUES (?, ?, ?, ?, ?) "
+            "INSERT INTO corporations (corporate_number, name, pref_code, city_code, address, kind) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(corporate_number) DO UPDATE SET "
             "name = excluded.name, pref_code = excluded.pref_code, "
-            "city_code = excluded.city_code, kind = excluded.kind",
+            "city_code = excluded.city_code, address = excluded.address, kind = excluded.kind",
             upserts,
         )
     if deletes:

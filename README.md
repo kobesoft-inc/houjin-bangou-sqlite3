@@ -52,13 +52,19 @@ shasum -a 256 -c SHA256SUMS
 | name | 商号又は名称（正規化済み。後述） |
 | pref_code | 都道府県コード（`prefectures.pref_code` を参照） |
 | city_code | 市区町村コード（`cities.city_code` を参照） |
+| address | 住所の詳細（丁目・番地・建物名等。市区町村より後ろの部分。原データのまま、正規化なし） |
 | kind | 法人種別コード（`kinds.kind_code` を参照） |
+
+`pref_code`/`city_code`から得られる都道府県名・市区町村名と`address`をつなげれば、
+実際の住所文字列になります。`address`は元データの「丁目、番地等」欄をそのまま格納しており、
+住所として意味のある「－」「‐」等のハイフンは、商号又は名称のような正規化（ダッシュの統一等）を
+行っていません。
 
 **登記記録の閉鎖等年月日が設定されている法人（廃止・清算結了・合併等）は取り込んでいません。**
 本テーブルには常に有効な法人のみが格納されます。
 
 ```sql
-SELECT c.corporate_number, c.name, pr.name AS pref, ci.name AS city, k.name AS kind
+SELECT c.corporate_number, c.name, pr.name AS pref, ci.name AS city, c.address, k.name AS kind
 FROM corporations c
 JOIN prefectures pr ON pr.pref_code = c.pref_code
 JOIN cities ci ON ci.city_code = c.city_code
