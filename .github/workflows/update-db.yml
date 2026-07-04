@@ -61,3 +61,17 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --title "法人番号データ ${LATEST_AVAILABLE}" \
             --notes "最終適用日: ${LATEST_AVAILABLE}"
+
+      - name: Delete old releases (keep latest only)
+        if: steps.check.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LATEST_AVAILABLE: ${{ steps.check.outputs.latest_available }}
+        run: |
+          CURRENT_TAG="db-${LATEST_AVAILABLE}"
+          for TAG in $(gh release list --repo "$GITHUB_REPOSITORY" --json tagName -q '.[].tagName'); do
+            if [ "$TAG" != "$CURRENT_TAG" ]; then
+              echo "古いリリースを削除: $TAG"
+              gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+            fi
+          done
