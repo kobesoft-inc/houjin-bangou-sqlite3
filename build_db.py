@@ -60,7 +60,7 @@ SABUN_DOWNLOAD_PAGE = "/download/sabun/index.html"
 TOKEN_FIELD = "jp.go.nta.houjin_bangou.framework.web.common.CNSFWTokenProcessor.request.token"
 TOKEN_RE = re.compile(re.escape(TOKEN_FIELD) + r'"\s+value="([^"]+)"')
 
-USER_AGENT = "Mozilla/5.0 (compatible; houjin-bangou-sqlite3/1.0)"
+USER_AGENT = "Mozilla/5.0 (compatible; houjin-bangou-db/1.0)"
 
 # 法人種別（リソース定義書「項番15 法人種別」より、固定の10種）
 KIND_LABELS = {

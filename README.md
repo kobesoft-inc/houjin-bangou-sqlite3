@@ -1,4 +1,4 @@
-# houjin-bangou-sqlite3
+# houjin-bangou-db
 
 国税庁「[法人番号公表サイト](https://www.houjin-bangou.nta.go.jp/)」が公開している法人番号データを、
 そのまま使えるSQLite3データベースにして配布しています。毎日自動チェックし、新しいデータが
@@ -10,7 +10,7 @@
 
 ## ダウンロード
 
-最新版は [Releases](https://github.com/kobesoft-inc/houjin-bangou-sqlite3/releases/latest) から
+最新版は [Releases](https://github.com/kobesoft-inc/houjin-bangou-db/releases/latest) から
 取得できます。配布ファイルはgzip圧縮した上で、`houjin_bangou.db.gz.0`, `houjin_bangou.db.gz.1`, ...
 のように50MBごとに分割されています（法人数が数百万件規模のため、圧縮後も50MBは確実に超えます）。
 ダウンロード後、次のように連結してから展開してください。
