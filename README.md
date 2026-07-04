@@ -11,13 +11,12 @@
 ## ダウンロード
 
 最新版は [Releases](https://github.com/kobesoft-inc/houjin-bangou-sqlite3/releases/latest) から
-取得できます。配布ファイルはgzip圧縮した `houjin_bangou.db.gz` です。
-
-圧縮後のサイズが50MBを超える場合は、`houjin_bangou.db.gz.0`, `houjin_bangou.db.gz.1`, ...
-のように分割されます。分割されている場合は、ダウンロード後に連結してから展開してください。
+取得できます。配布ファイルはgzip圧縮した上で、`houjin_bangou.db.gz.0`, `houjin_bangou.db.gz.1`, ...
+のように50MBごとに分割されています（法人数が数百万件規模のため、圧縮後も50MBは確実に超えます）。
+ダウンロード後、次のように連結してから展開してください。
 
 ```bash
-cat houjin_bangou.db.gz.* > houjin_bangou.db.gz   # 分割されていない場合は不要
+cat houjin_bangou.db.gz.* > houjin_bangou.db.gz
 gunzip houjin_bangou.db.gz
 ```
 
