@@ -17,13 +17,16 @@ selDlFileNoパラメータ）で実現されているため、GETでトークン
 
 テーブル構成:
 
-- prefectures  : 都道府県コード -> 都道府県名
-- cities       : 市区町村コード(都道府県コード+3桁) -> 市区町村名
-- kinds        : 法人種別コード -> 法人種別名（固定10種、公式仕様書より）
-- corporations : 法人番号(BIGINT) -> 商号名称, 都道府県コード, 市区町村コード,
-  住所詳細(丁目番地等), 法人種別
-  - 登記記録の閉鎖等年月日が設定されている（＝廃止等）法人は取り込まない。
-  - 処理区分が「99:削除」の法人番号は取り込み対象から削除する。
+- prefectures   : 都道府県コード -> 都道府県名
+- cities        : 市区町村コード(都道府県コード+3桁) -> 市区町村名
+- kinds         : 法人種別コード -> 法人種別名（固定10種、公式仕様書より）
+- close_causes  : 登記記録の閉鎖等の事由コード -> 事由名（固定4種、公式仕様書より）
+- corporations  : 法人番号(BIGINT) -> 商号名称, 都道府県コード, 市区町村コード,
+  住所詳細(丁目番地等), 法人種別, 登記記録の閉鎖等の事由コード(close_cause)
+  - 廃止・清算結了・合併等により無効になった法人番号も、close_causeに事由コードを
+    設定した上で取り込む（空文字列 = 有効）。close_causeにインデックスを張っているため、
+    「有効なものだけ」の絞り込み（`WHERE close_cause = ''`）は高速に行える。
+  - 処理区分が「99:削除」の法人番号（指定そのものが撤回されたもの）は取り込み対象から削除する。
 - meta          : 同期状態（全件データの作成日、最終適用済み差分日）を記録する内部テーブル
 
 商号又は名称は、検索・比較しやすいよう以下の正規化を行う。
@@ -73,6 +76,15 @@ KIND_LABELS = {
     "499": "その他",
 }
 
+# 登記記録の閉鎖等の事由（リソース定義書「項番26 登記記録の閉鎖等の事由」より、固定の4種）
+# 空文字列は「閉鎖等なし（有効）」を表す。
+CLOSE_CAUSE_LABELS = {
+    "01": "清算の結了等",
+    "11": "合併による解散等",
+    "21": "登記官による閉鎖",
+    "31": "その他の清算の結了等",
+}
+
 # 処理区分「99」は、法人番号の指定が撤回されたことを表す（全項目がブランクになる）
 PROCESS_DELETE = "99"
 
@@ -94,16 +106,23 @@ CREATE TABLE IF NOT EXISTS kinds (
     name      TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS close_causes (
+    close_cause_code TEXT PRIMARY KEY,
+    name             TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS corporations (
     corporate_number INTEGER PRIMARY KEY,
     name             TEXT NOT NULL,
     pref_code        TEXT NOT NULL REFERENCES prefectures (pref_code),
     city_code        TEXT NOT NULL REFERENCES cities (city_code),
     address          TEXT NOT NULL,
-    kind             TEXT NOT NULL REFERENCES kinds (kind_code)
+    kind             TEXT NOT NULL REFERENCES kinds (kind_code),
+    close_cause      TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_corporations_name ON corporations (name);
 CREATE INDEX IF NOT EXISTS idx_corporations_city_code ON corporations (city_code);
+CREATE INDEX IF NOT EXISTS idx_corporations_close_cause ON corporations (close_cause);
 
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
@@ -230,11 +249,8 @@ def apply_rows(conn, rows):
         process = row[2]
 
         if process == PROCESS_DELETE:
-            deletes.append(int(corporate_number))
-            continue
-
-        close_date = row[18]
-        if close_date:
+            # 法人番号の指定そのものが撤回されたもの。名称・住所等の項目値も無いため、
+            # 有効/廃止を問わず対象から削除する。
             deletes.append(int(corporate_number))
             continue
 
@@ -251,7 +267,8 @@ def apply_rows(conn, rows):
         name = normalize_name(row[6])
         address = row[11].strip()
         kind = row[8]
-        upserts.append((int(corporate_number), name, pref_code, city_code, address, kind))
+        close_cause = row[19]  # 空文字列 = 有効（閉鎖等なし）
+        upserts.append((int(corporate_number), name, pref_code, city_code, address, kind, close_cause))
 
     if prefectures:
         conn.executemany(
@@ -267,11 +284,11 @@ def apply_rows(conn, rows):
         )
     if upserts:
         conn.executemany(
-            "INSERT INTO corporations (corporate_number, name, pref_code, city_code, address, kind) "
-            "VALUES (?, ?, ?, ?, ?, ?) "
+            "INSERT INTO corporations (corporate_number, name, pref_code, city_code, address, kind, close_cause) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(corporate_number) DO UPDATE SET "
-            "name = excluded.name, pref_code = excluded.pref_code, "
-            "city_code = excluded.city_code, address = excluded.address, kind = excluded.kind",
+            "name = excluded.name, pref_code = excluded.pref_code, city_code = excluded.city_code, "
+            "address = excluded.address, kind = excluded.kind, close_cause = excluded.close_cause",
             upserts,
         )
     if deletes:
@@ -287,6 +304,11 @@ def ensure_kinds(conn):
         "INSERT INTO kinds (kind_code, name) VALUES (?, ?) "
         "ON CONFLICT(kind_code) DO UPDATE SET name = excluded.name",
         list(KIND_LABELS.items()),
+    )
+    conn.executemany(
+        "INSERT INTO close_causes (close_cause_code, name) VALUES (?, ?) "
+        "ON CONFLICT(close_cause_code) DO UPDATE SET name = excluded.name",
+        list(CLOSE_CAUSE_LABELS.items()),
     )
 
 
