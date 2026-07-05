@@ -17,15 +17,16 @@ selDlFileNoパラメータ）で実現されているため、GETでトークン
 
 テーブル構成:
 
-- prefectures   : 都道府県コード -> 都道府県名
-- cities        : 市区町村コード(都道府県コード+3桁) -> 市区町村名
-- kinds         : 法人種別コード -> 法人種別名（固定10種、公式仕様書より）
-- close_causes  : 登記記録の閉鎖等の事由コード -> 事由名（固定4種、公式仕様書より）
+- prefectures   : 都道府県コード(prefecture_code) -> 都道府県名
+- cities        : 市区町村コード(都道府県コード+3桁) -> 都道府県コード, 市区町村名
+- kinds         : 法人種別コード(整数) -> 法人種別名（固定10種、公式仕様書より）
+- close_causes  : 登記記録の閉鎖等の事由コード(整数) -> 事由名
+  （公式仕様書の4種 + 「0:有効」というこのDB独自の値）
 - corporations  : 法人番号(BIGINT) -> 商号名称, 都道府県コード, 市区町村コード,
-  住所詳細(丁目番地等), 法人種別, 登記記録の閉鎖等の事由コード(close_cause)
+  住所詳細(丁目番地等), 法人種別コード(kind), 登記記録の閉鎖等の事由コード(close_cause)
   - 廃止・清算結了・合併等により無効になった法人番号も、close_causeに事由コードを
-    設定した上で取り込む（空文字列 = 有効）。close_causeにインデックスを張っているため、
-    「有効なものだけ」の絞り込み（`WHERE close_cause = ''`）は高速に行える。
+    設定した上で取り込む（0 = 有効）。close_causeにインデックスを張っているため、
+    「有効なものだけ」の絞り込み（`WHERE close_cause = 0`）は高速に行える。
   - 処理区分が「99:削除」の法人番号（指定そのものが撤回されたもの）は取り込み対象から削除する。
 - meta          : 同期状態（全件データの作成日、最終適用済み差分日）を記録する内部テーブル
 
@@ -64,25 +65,26 @@ USER_AGENT = "Mozilla/5.0 (compatible; houjin-bangou-db/1.0)"
 
 # 法人種別（リソース定義書「項番15 法人種別」より、固定の10種）
 KIND_LABELS = {
-    "101": "国の機関",
-    "201": "地方公共団体",
-    "301": "株式会社",
-    "302": "有限会社",
-    "303": "合名会社",
-    "304": "合資会社",
-    "305": "合同会社",
-    "399": "その他の設立登記法人",
-    "401": "外国会社等",
-    "499": "その他",
+    101: "国の機関",
+    201: "地方公共団体",
+    301: "株式会社",
+    302: "有限会社",
+    303: "合名会社",
+    304: "合資会社",
+    305: "合同会社",
+    399: "その他の設立登記法人",
+    401: "外国会社等",
+    499: "その他",
 }
 
 # 登記記録の閉鎖等の事由（リソース定義書「項番26 登記記録の閉鎖等の事由」より、固定の4種）
-# 空文字列は「閉鎖等なし（有効）」を表す。
+# 0は「閉鎖等なし（有効）」を表す（元データの事由コードには存在しない、このDB独自の値）。
 CLOSE_CAUSE_LABELS = {
-    "01": "清算の結了等",
-    "11": "合併による解散等",
-    "21": "登記官による閉鎖",
-    "31": "その他の清算の結了等",
+    0: "有効",
+    1: "清算の結了等",
+    11: "合併による解散等",
+    21: "登記官による閉鎖",
+    31: "その他の清算の結了等",
 }
 
 # 処理区分「99」は、法人番号の指定が撤回されたことを表す（全項目がブランクになる）
@@ -90,35 +92,35 @@ PROCESS_DELETE = "99"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS prefectures (
-    pref_code TEXT PRIMARY KEY,
-    name      TEXT NOT NULL
+    prefecture_code TEXT PRIMARY KEY,
+    name            TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS cities (
-    city_code TEXT PRIMARY KEY,
-    pref_code TEXT NOT NULL REFERENCES prefectures (pref_code),
-    name      TEXT NOT NULL
+    city_code       TEXT PRIMARY KEY,
+    prefecture_code TEXT NOT NULL REFERENCES prefectures (prefecture_code),
+    name            TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_cities_pref_code ON cities (pref_code);
+CREATE INDEX IF NOT EXISTS idx_cities_prefecture_code ON cities (prefecture_code);
 
 CREATE TABLE IF NOT EXISTS kinds (
-    kind_code TEXT PRIMARY KEY,
+    kind_code INTEGER PRIMARY KEY,
     name      TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS close_causes (
-    close_cause_code TEXT PRIMARY KEY,
+    close_cause_code INTEGER PRIMARY KEY,
     name             TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS corporations (
     corporate_number INTEGER PRIMARY KEY,
     name             TEXT NOT NULL,
-    pref_code        TEXT NOT NULL REFERENCES prefectures (pref_code),
+    prefecture_code  TEXT NOT NULL REFERENCES prefectures (prefecture_code),
     city_code        TEXT NOT NULL REFERENCES cities (city_code),
     address          TEXT NOT NULL,
-    kind             TEXT NOT NULL REFERENCES kinds (kind_code),
-    close_cause      TEXT NOT NULL DEFAULT ''
+    kind             INTEGER NOT NULL REFERENCES kinds (kind_code),
+    close_cause      INTEGER NOT NULL DEFAULT 0 REFERENCES close_causes (close_cause_code)
 );
 CREATE INDEX IF NOT EXISTS idx_corporations_name ON corporations (name);
 CREATE INDEX IF NOT EXISTS idx_corporations_city_code ON corporations (city_code);
@@ -254,41 +256,46 @@ def apply_rows(conn, rows):
             deletes.append(int(corporate_number))
             continue
 
-        pref_code, city_local_code = row[13], row[14]
-        if not pref_code or not city_local_code:
+        prefecture_code, city_local_code = row[13], row[14]
+        if not prefecture_code or not city_local_code:
             # 国外所在地の法人など、国内の都道府県・市区町村コードが無いものは対象外
             continue
 
-        pref_name, city_name = row[9], row[10]
-        city_code = pref_code + city_local_code
-        prefectures[pref_code] = pref_name
-        cities[city_code] = (pref_code, city_name)
+        prefecture_name, city_name = row[9], row[10]
+        city_code = prefecture_code + city_local_code
+        prefectures[prefecture_code] = prefecture_name
+        cities[city_code] = (prefecture_code, city_name)
 
         name = normalize_name(row[6])
         address = row[11].strip()
-        kind = row[8]
-        close_cause = row[19]  # 空文字列 = 有効（閉鎖等なし）
-        upserts.append((int(corporate_number), name, pref_code, city_code, address, kind, close_cause))
+        kind = int(row[8])
+        close_cause = int(row[19]) if row[19] else 0  # 0 = 有効（閉鎖等なし）
+        upserts.append(
+            (int(corporate_number), name, prefecture_code, city_code, address, kind, close_cause)
+        )
 
     if prefectures:
         conn.executemany(
-            "INSERT INTO prefectures (pref_code, name) VALUES (?, ?) "
-            "ON CONFLICT(pref_code) DO UPDATE SET name = excluded.name",
+            "INSERT INTO prefectures (prefecture_code, name) VALUES (?, ?) "
+            "ON CONFLICT(prefecture_code) DO UPDATE SET name = excluded.name",
             list(prefectures.items()),
         )
     if cities:
         conn.executemany(
-            "INSERT INTO cities (city_code, pref_code, name) VALUES (?, ?, ?) "
-            "ON CONFLICT(city_code) DO UPDATE SET pref_code = excluded.pref_code, name = excluded.name",
-            [(code, pref_code, name) for code, (pref_code, name) in cities.items()],
+            "INSERT INTO cities (city_code, prefecture_code, name) VALUES (?, ?, ?) "
+            "ON CONFLICT(city_code) DO UPDATE SET "
+            "prefecture_code = excluded.prefecture_code, name = excluded.name",
+            [(code, prefecture_code, name) for code, (prefecture_code, name) in cities.items()],
         )
     if upserts:
         conn.executemany(
-            "INSERT INTO corporations (corporate_number, name, pref_code, city_code, address, kind, close_cause) "
+            "INSERT INTO corporations "
+            "(corporate_number, name, prefecture_code, city_code, address, kind, close_cause) "
             "VALUES (?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(corporate_number) DO UPDATE SET "
-            "name = excluded.name, pref_code = excluded.pref_code, city_code = excluded.city_code, "
-            "address = excluded.address, kind = excluded.kind, close_cause = excluded.close_cause",
+            "name = excluded.name, prefecture_code = excluded.prefecture_code, "
+            "city_code = excluded.city_code, address = excluded.address, "
+            "kind = excluded.kind, close_cause = excluded.close_cause",
             upserts,
         )
     if deletes:

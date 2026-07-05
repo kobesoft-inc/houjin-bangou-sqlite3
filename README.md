@@ -4,8 +4,8 @@
 そのまま使えるSQLite3データベースにして配布しています。毎日自動チェックし、新しいデータが
 公開されていればDBを作り直します（[GitHub Actions](.github/workflows/update-db.yml)）。
 
-廃止・清算結了・合併等により無効になった法人番号も、`close_cause`にその事由を入れた上で
-収録しています（現存する法人だけが欲しい場合は`close_cause = ''`で絞り込んでください。
+廃止・清算結了・合併等により無効になった法人番号も、`close_cause`にその事由コードを入れた上で
+収録しています（現存する法人だけが欲しい場合は`close_cause = 0`で絞り込んでください。
 インデックスがあるため高速です）。
 
 ## ダウンロード
@@ -35,8 +35,8 @@ shasum -a 256 -c SHA256SUMS
 | `corporations` | 法人番号 → 商号名称・住所・法人種別・閉鎖等の事由 |
 | `prefectures` | 都道府県コード(2桁) → 都道府県名 |
 | `cities` | 市区町村コード(5桁) → 市区町村名 |
-| `kinds` | 法人種別コード(3桁) → 法人種別名（固定10種） |
-| `close_causes` | 登記記録の閉鎖等の事由コード(2桁) → 事由名（固定4種） |
+| `kinds` | 法人種別コード(整数) → 法人種別名（固定10種） |
+| `close_causes` | 登記記録の閉鎖等の事由コード(整数) → 事由名（固定4種 + 有効を表す0） |
 
 ### corporations（法人）
 
@@ -44,33 +44,34 @@ shasum -a 256 -c SHA256SUMS
 | --- | --- |
 | corporate_number | 法人番号（13桁の整数） |
 | name | 商号又は名称（正規化済み。下記「検索のヒント」を参照） |
-| pref_code | 都道府県コード（`prefectures.pref_code` を参照） |
+| prefecture_code | 都道府県コード（`prefectures.prefecture_code` を参照） |
 | city_code | 市区町村コード（`cities.city_code` を参照） |
 | address | 住所の詳細（丁目・番地・建物名等。市区町村より後ろの部分。元データのまま） |
-| kind | 法人種別コード（`kinds.kind_code` を参照） |
-| close_cause | 登記記録の閉鎖等の事由コード（`close_causes.close_cause_code` を参照。**空文字列 = 有効**） |
+| kind | 法人種別コード（整数。`kinds.kind_code` を参照） |
+| close_cause | 登記記録の閉鎖等の事由コード（整数。`close_causes.close_cause_code` を参照。**0 = 有効**） |
 
-`pref_code`・`city_code`から得られる都道府県名・市区町村名と`address`をつなげれば、
+`prefecture_code`・`city_code`から得られる都道府県名・市区町村名と`address`をつなげれば、
 実際の住所文字列になります。`address`の「－」「‐」等のハイフンは番地の区切りとして意味が
 あるため、`name`のような正規化（ダッシュの統一等）は行っていません。
 
-現存する法人だけが欲しい場合は`close_cause = ''`で絞り込んでください。`close_cause`には
-インデックスがあるため、この絞り込みは高速です。
+現存する法人だけが欲しい場合は`close_cause = 0`で絞り込んでください。`close_cause`には
+インデックスがあるため、この絞り込みは高速です。`close_causes`には`0`（有効）の行も
+含まれているため、`LEFT JOIN`ではなく通常の`JOIN`でも現存する法人を正しく取得できます。
 
 ```sql
 -- 現存する法人だけを検索（インデックスが使われる）
 SELECT c.corporate_number, c.name, pr.name AS pref, ci.name AS city, c.address, k.name AS kind
 FROM corporations c
-JOIN prefectures pr ON pr.pref_code = c.pref_code
+JOIN prefectures pr ON pr.prefecture_code = c.prefecture_code
 JOIN cities ci ON ci.city_code = c.city_code
 JOIN kinds k ON k.kind_code = c.kind
 WHERE c.corporate_number = 1010001093652
-  AND c.close_cause = '';
+  AND c.close_cause = 0;
 
--- 廃止・清算結了・合併等の理由も含めて確認する
+-- 廃止・清算結了・合併等の理由も含めて確認する（0の場合は「有効」と表示される）
 SELECT c.corporate_number, c.name, cc.name AS close_cause
 FROM corporations c
-LEFT JOIN close_causes cc ON cc.close_cause_code = c.close_cause
+JOIN close_causes cc ON cc.close_cause_code = c.close_cause
 WHERE c.corporate_number = 1000020328642;
 ```
 
@@ -89,12 +90,12 @@ WHERE c.corporate_number = 1000020328642;
 | 401 | 外国会社等 |
 | 499 | その他 |
 
-### close_causes（登記記録の閉鎖等の事由、固定4種）
+### close_causes（登記記録の閉鎖等の事由、固定4種 + 有効）
 
 | コード | 事由 |
 | --- | --- |
-| （空文字列） | 有効（閉鎖等なし） |
-| 01 | 清算の結了等 |
+| 0 | 有効（閉鎖等なし。このDB独自の値） |
+| 1 | 清算の結了等 |
 | 11 | 合併による解散等 |
 | 21 | 登記官による閉鎖 |
 | 31 | その他の清算の結了等 |
